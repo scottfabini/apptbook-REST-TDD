@@ -37,14 +37,23 @@ public class AppointmentBookRestClient extends HttpRequestHelper
     /**
      * Returns all values for the given key
      */
-    public Response getValues( String key ) throws IOException
+    public Response getValues( String owner ) throws IOException
     {
-        return get(this.url, "key", key);
+        return get(this.url, "owner", owner);
     }
 
-    public Response addKeyValuePair( String key, String value ) throws IOException
+
+    /**
+     * Returns range of values for the given key
+     */
+    public Response getValues( String owner, String beginTime, String endTime ) throws IOException
     {
-        return postToMyURL("key", key, "value", value);
+        return get(this.url, "owner", owner, "beginTime", beginTime, "endTime", endTime);
+    }
+
+    public Response addOwnerAppointmentPair( String owner, String description, String beginTime, String endTime ) throws IOException
+    {
+        return postToMyURL("owner", owner, "description", description, "beginTime", beginTime, "endTime", endTime);
     }
 
     @VisibleForTesting
@@ -55,4 +64,14 @@ public class AppointmentBookRestClient extends HttpRequestHelper
     public Response removeAllMappings() throws IOException {
         return delete(this.url);
     }
+
+
+
+
+
+    public Response createAppointment(String owner, String description, String beginTime, String endTime) throws IOException {
+        return post(this.url, "owner", owner, "description", description, "beginTime", beginTime, "endTime", endTime);
+    }
+
+
 }

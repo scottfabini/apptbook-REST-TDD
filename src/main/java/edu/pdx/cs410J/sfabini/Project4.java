@@ -15,73 +15,69 @@ public class Project4 {
     public static final String MISSING_ARGS = "Missing command line arguments";
 
     public static void main(String... args) {
-        String hostName = null;
-        String portString = null;
-        String key = null;
-        String value = null;
 
-        for (String arg : args) {
-            if (hostName == null) {
-                hostName = arg;
+        Appointment appointment = null;
+        Options options;
+        Arguments arguments;
 
-            } else if ( portString == null) {
-                portString = arg;
 
-            } else if (key == null) {
-                key = arg;
+        if (args.length == 0) {
+            System.err.println(MISSING_ARGS);
+            System.exit(1);
+        }
+        options = Options.createOptions(args);
+        arguments = Arguments.createArguments(args, options);
 
-            } else if (value == null) {
-                value = arg;
 
-            } else {
-                usage("Extraneous command line argument: " + arg);
-            }
+        if (options.isReadmeSpecified()) {
+            usage("-README");
+            System.exit(0);
         }
 
-        if (hostName == null) {
-            usage( MISSING_ARGS );
-
-        } else if ( portString == null) {
-            usage( "Missing port" );
+        if (arguments.isAppointmentSpecified()) {
+            appointment = new Appointment(arguments.getDescription(),
+                    arguments.getBeginTimeString(), arguments.getEndTimeString());
         }
 
-        int port;
+        AppointmentBookRestClient client = new AppointmentBookRestClient(options.getHost(), options.getPort());
+
+        HttpRequestHelper.Response response = null;
         try {
-            port = Integer.parseInt( portString );
-            
-        } catch (NumberFormatException ex) {
-            usage("Port \"" + portString + "\" must be an integer");
-            return;
-        }
-
-        AppointmentBookRestClient client = new AppointmentBookRestClient(hostName, port);
-
-        HttpRequestHelper.Response response;
-        try {
-            if (key == null) {
-                // Print all key/value pairs
+            if (arguments.isOwner() == false) {
+                // Print all owner/value pairs
                 response = client.getAllKeysAndValues();
 
-            } else if (value == null) {
+            } else if (options.isSearchSpecified() && arguments.isOwner() && arguments.isBeginTimeString() && arguments.isEndTimeString()) {
+                // Search the response by date.
+                response = client.getValues(arguments.getOwner(), arguments.getBeginTimeString(), arguments.getEndTimeString());
+            }
+            else if (arguments.isOwner() == true && arguments.isAppointmentSpecified() == false) {
                 // Print all values of key
-                response = client.getValues(key);
+                response = client.getValues(arguments.getOwner());
 
-            } else {
+            } else if (arguments.isOwner() == true && arguments.isAppointmentSpecified() == true){
                 // Post the key/value pair
-                response = client.addKeyValuePair(key, value);
+                response = client.addOwnerAppointmentPair(arguments.getOwner(), appointment.getDescription(), appointment.getBeginTimeString()
+                        , appointment.getEndTimeString());
             }
 
-            checkResponseCode( HttpURLConnection.HTTP_OK, response);
+            if (response != null) {
+                checkResponseCode( HttpURLConnection.HTTP_OK, response);
+                System.out.println(response.getContent());
+            }
 
         } catch ( IOException ex ) {
             error("While contacting server: " + ex);
             return;
         }
 
-        System.out.println(response.getContent());
-
+        detectPrintOption(args, appointment);
         System.exit(0);
     }
+
+
+
+
 
     /**
      * Makes sure that the give response has the expected HTTP status code
@@ -104,6 +100,23 @@ public class Project4 {
         System.exit(1);
     }
 
+
+    /**
+     * Detects if the -print option was specified as a command-line argument.
+     * If so, parses the AppointmentBook information from the file.
+     * @param args The command-line arguments
+     */
+    protected static void detectPrintOption(String [] args, Appointment appointment) {
+        if (appointment == null) {
+            return;
+        }
+        for (String arg : args) {
+            if (arg.compareTo("-print") == 0) {
+                System.out.println("\n-print option of most recent appointment: ");
+                System.out.println(appointment);
+            }
+        }
+    }
     /**
      * Prints usage information for this program and exits
      * @param message An error message to print
@@ -119,9 +132,10 @@ public class Project4 {
         err.println("  key     Key to query");
         err.println("  value   Value to add to server");
         err.println();
-        err.println("This simple program posts key/value pairs to the server");
-        err.println("If no value is specified, then all values are printed");
-        err.println("If no key is specified, all key/value pairs are printed");
+        err.println("Scott Fabini Project 4");
+        err.println("This simple program posts owner-Appointment pairs to the server");
+        err.println("If no Appointment is specified, then all Appointments for that owner are printed");
+        err.println("If no key is specified, all owner/Appointment pairs are printed");
         err.println();
 
         System.exit(1);

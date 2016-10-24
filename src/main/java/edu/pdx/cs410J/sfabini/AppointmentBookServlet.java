@@ -9,8 +9,13 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.util.HashMap;
+import java.text.DateFormat;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * This servlet ultimately provides a REST API for working with an
@@ -19,19 +24,10 @@ import java.util.Map;
  */
 public class AppointmentBookServlet extends HttpServlet
 {
-    private final Map<String, String> data = new HashMap<>();
-    private final Map<String, AppointmentBook> appointmentBooks = new HashMap<>();
 
+    private final Map<String, AppointmentBook> appointmentBooks = new ConcurrentHashMap<>();
+    int appointmentCountOnServer;
 
-    public AppointmentBookServlet() {
-        createPreCannedAppointmentBooks();
-    }
-
-    private void createPreCannedAppointmentBooks() {
-        String owner = "PreCannedOwner";
-        AppointmentBook book = new AppointmentBook(owner);
-        this.appointmentBooks.put(owner, book);
-    }
 
     /**
      * Handles an HTTP GET request from a client by writing the value of the key
@@ -44,22 +40,50 @@ public class AppointmentBookServlet extends HttpServlet
     {
         response.setContentType( "text/plain" );
 
+
+
         String owner = getParameter("owner", request);
-        createPreCannedAppointmentBooks();
+        String description = getParameter("description", request);
+        String beginTimeString = getParameter("beginTime", request);
+        String endTimeString = getParameter("endTime", request);
 
-        prettyPrint(appointmentBooks.get(owner), response.getWriter());
-        response.setStatus(HttpServletResponse.SC_OK);
+
+        String key = getParameter("key", request);
+        String value = getParameter("value", request);
+        // Use key/values for web interface
+        if (key != null && value != null) {
+            String[] split = value.split(" ");
+            if (split.length == 7) {
+                description = split[0];
+                beginTimeString = split[1] + " " + split[2] + " " + split[3];
+                endTimeString = split[4] + " " + split[5] + " " + split[6];
+            }
+            if (split.length == 6) {
+                beginTimeString = split[1] + " " + split[2] + " " + split[3];
+                endTimeString = split[4] + " " + split[5] + " " + split[6];
+            }
+            owner = key;
+        }
+
+        if (owner == null && beginTimeString == null && endTimeString == null) {
+            writeAllMappings(response);
+        }
+        else if (owner != null && description == null && beginTimeString != null && endTimeString != null) {
+            createResponseWithRangeOfAppointments(response, owner, beginTimeString, endTimeString);
+        }
+        else if (owner != null && beginTimeString == null && endTimeString == null) {
+            writeValue(owner, response);
+
+        }
+        else {
+            response.getWriter().append(Messages.getMappingCount(appointmentCountOnServer));
+            response.getWriter().flush();
+            response.setStatus(HttpServletResponse.SC_OK);
+        }
+
+
+
     }
-
-    private void prettyPrint(AppointmentBook book, PrintWriter pw) throws IOException {
-        PrettyPrinter pretty = new PrettyPrinter(pw);
-        pretty.dump(book);
-    }
-
-    private AppointmentBook getAppointmentBookForOwner(String owner) {
-        return this.appointmentBooks.get(owner);
-    }
-
 
     /**
      * Handles an HTTP POST request by storing the key/value pair specified by the
@@ -71,25 +95,47 @@ public class AppointmentBookServlet extends HttpServlet
     {
         response.setContentType( "text/plain" );
 
-        String key = getParameter( "key", request );
-        if (key == null) {
-            missingRequiredParameter(response, "key");
-            return;
+        String key = getParameter("key", request);
+        String value = getParameter("value", request);
+        String owner = getParameter("owner", request);
+        String description = getParameter("description", request);
+        String beginTime = getParameter("beginTime", request);
+        String endTime = getParameter("endTime", request);
+
+
+
+        // Use key/values for web interface
+        if (key != null && value != null) {
+            owner = key;
+            String[] split = value.split(" ");
+            if (split.length == 7) {
+                description = split[0];
+                beginTime = split[1] + " " + split[2] + " " + split[3];
+                endTime = split[4] + " " + split[5] + " " + split[6];
+
+            }
         }
 
-        String value = getParameter( "value", request );
-        if ( value == null) {
-            missingRequiredParameter( response, "value" );
-            return;
+        if (owner == null) {
+            missingRequiredParameter(response, "post requires owner or key");
+        }
+        if (description == null || beginTime == null || endTime == null) {
+            missingRequiredParameter(response, "post requires all appointment parameters");
         }
 
-        this.data.put(key, value);
+        AppointmentBook book = createSingletonAppointmentBookForOwner(owner);
 
-        PrintWriter pw = response.getWriter();
-        pw.println(Messages.mappedKeyValue(key, value));
-        pw.flush();
 
-        response.setStatus( HttpServletResponse.SC_OK);
+        if (description != null && beginTime != null && endTime != null) {
+            Appointment appointment = new Appointment(description, beginTime, endTime);
+            book.addAppointment(appointment);
+            appointmentCountOnServer++;
+        }
+        appointmentBooks.put(owner, book);
+        response.getWriter().append(Messages.mappedAppointment(owner, book));
+        response.getWriter().append(Messages.getMappingCount(appointmentCountOnServer));
+        response.getWriter().flush();
+        response.setStatus(HttpServletResponse.SC_OK);
     }
 
     /**
@@ -102,6 +148,7 @@ public class AppointmentBookServlet extends HttpServlet
         response.setContentType("text/plain");
 
         this.appointmentBooks.clear();
+        appointmentCountOnServer = 0;
 
         PrintWriter pw = response.getWriter();
         pw.println(Messages.allMappingsDeleted());
@@ -112,30 +159,47 @@ public class AppointmentBookServlet extends HttpServlet
     }
 
     /**
-     * Writes an error message about a missing parameter to the HTTP response.
-     *
-     * The text of the error message is created by {@link Messages#missingRequiredParameter(String)}
+     * Called from doGet when owner != null && beginTimeString != null && endTimeString != null
+     * @param response The http response message
+     * @param owner The owner of the appointment book
+     * @param beginTimeString The beginTime as string.  The appointments will be in the range beginTime-endTime
+     * @param endTimeString The endTime as string
+     * @throws IOException
      */
-    private void missingRequiredParameter( HttpServletResponse response, String parameterName )
-        throws IOException
-    {
-        String message = Messages.missingRequiredParameter(parameterName);
-        response.sendError(HttpServletResponse.SC_PRECONDITION_FAILED, message);
+    @VisibleForTesting
+    protected void createResponseWithRangeOfAppointments(HttpServletResponse response,
+                                                       String owner, String beginTimeString, String endTimeString) throws IOException {
+        DateFormat df = new SimpleDateFormat("MM/dd/yyyy hh:mm a");
+        Date beginTime = null;
+        Date endTime = null;
+        try {
+            beginTime = df.parse(beginTimeString);
+            endTime = df.parse(endTimeString);
+            prettyPrint(this.appointmentBooks.get(owner), beginTime, endTime, response.getWriter());
+            response.getWriter().append(Messages.getMappingCount(appointmentCountOnServer));
+            response.setStatus(HttpServletResponse.SC_OK);
+            response.getWriter().flush();
+        } catch (ParseException e) {
+            response.setStatus(HttpServletResponse.SC_BAD_REQUEST);
+        }
     }
+
+
 
     /**
      * Writes the value of the given key to the HTTP response.
      *
      * The text of the message is formatted with {@link Messages#getMappingCount(int)}
-     * and {@link Messages#formatKeyValuePair(String, String)}
+     * and {@link Messages#formatAppointmentBook(String, AppointmentBook)} (String, Appointment)}
      */
-    private void writeValue( String key, HttpServletResponse response ) throws IOException
+    @VisibleForTesting
+    private void writeValue( String owner, HttpServletResponse response ) throws IOException
     {
-        String value = this.data.get(key);
+        AppointmentBook appointmentBook = this.appointmentBooks.get(owner);
 
         PrintWriter pw = response.getWriter();
-        pw.println(Messages.getMappingCount( value != null ? 1 : 0 ));
-        pw.println(Messages.formatKeyValuePair(key, value));
+        pw.println(Messages.getMappingCount( appointmentBook != null ? 1 : 0 ));
+        pw.println(Messages.formatAppointmentBook(owner, appointmentBook));
 
         pw.flush();
 
@@ -144,23 +208,27 @@ public class AppointmentBookServlet extends HttpServlet
 
     /**
      * Writes all of the key/value pairs to the HTTP response.
+     * Called from doGet when owner == null && beginTimeString == null && endTimeString == null
      *
      * The text of the message is formatted with
-     * {@link Messages#formatKeyValuePair(String, String)}
+     * {@link Messages#formatAppointmentBook(String, AppointmentBook)}
      */
     private void writeAllMappings( HttpServletResponse response ) throws IOException
     {
         PrintWriter pw = response.getWriter();
-        pw.println(Messages.getMappingCount(data.size()));
+        pw.println(Messages.getMappingCount(appointmentBooks.size()));
 
-        for (Map.Entry<String, String> entry : this.data.entrySet()) {
-            pw.println(Messages.formatKeyValuePair(entry.getKey(), entry.getValue()));
+        for (Map.Entry<String, AppointmentBook> entry : this.appointmentBooks.entrySet()) {
+            pw.println(Messages.formatAppointmentBook(entry.getKey(), entry.getValue()));
         }
 
         pw.flush();
 
         response.setStatus( HttpServletResponse.SC_OK );
     }
+
+
+
 
     /**
      * Returns the value of the HTTP request parameter with the given name.
@@ -178,13 +246,48 @@ public class AppointmentBookServlet extends HttpServlet
       }
     }
 
-    @VisibleForTesting
-    void setValueForKey(String key, String value) {
-        this.data.put(key, value);
+    /**
+     * Writes an error message about a missing parameter to the HTTP response.
+     *
+     * The text of the error message is created by {@link Messages#missingRequiredParameter(String)}
+     */
+    private void missingRequiredParameter( HttpServletResponse response, String parameterName )
+            throws IOException
+    {
+
+        String message = Messages.missingRequiredParameter(parameterName);
+        response.sendError(HttpServletResponse.SC_PRECONDITION_FAILED, message);
+    }
+
+    public AppointmentBookServlet() {
+        createPreCannedAppointmentBooks();
+    }
+
+    private void createPreCannedAppointmentBooks() {
+        String owner = "PreCannedOwner";
+        AppointmentBook book = new AppointmentBook(owner);
+        this.appointmentBooks.put(owner, book);
+    }
+
+
+    private void prettyPrint(AppointmentBook book, PrintWriter pw) throws IOException {
+        PrettyPrinter pretty = new PrettyPrinter(pw);
+        pretty.dump(book);
+    }
+
+    private void prettyPrint(AppointmentBook book, Date beginTime, Date endTime, PrintWriter pw) throws IOException {
+        PrettyPrinter pretty = new PrettyPrinter(pw);
+        pretty.dumpDateRange(book, beginTime, endTime);
     }
 
     @VisibleForTesting
-    AppointmentBook getValueForOwner(String owner) {
-        return this.appointmentBooks.get(owner);
+    protected AppointmentBook createSingletonAppointmentBookForOwner(String owner) {
+        AppointmentBook book = this.appointmentBooks.get(owner);
+        if (book == null) {
+            book = new AppointmentBook(owner);
+            this.appointmentBooks.put(owner, book);
+        }
+        return book;
     }
+
 }
